@@ -8,8 +8,15 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { Resend } = require('resend');
+
 const app = express();
+
+// Required when running behind Railway/Vercel/proxy infrastructure.
+// This allows express-rate-limit to correctly understand forwarded IPs.
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 4000;
+
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const ACCESS_COOKIE = 'sf_access';
 const REFRESH_COOKIE = 'sf_refresh';
@@ -141,37 +148,45 @@ function createEmailVerificationToken(user) {
 
 async function sendVerificationEmail(user, token) {
   const verificationUrl =
-    `${CLIENT_ORIGIN}/verify-email?token=` +
-    encodeURIComponent(token);
+    `${CLIENT_ORIGIN}/verify-email?token=` + encodeURIComponent(token);
 
-  try {
-    await resend.emails.send({
-      from: process.env.EMAIL_FROM,
-      to: user.email,
-      subject: 'Verify Your Soccer Formations Account',
-      html: `
-        <h2>Welcome to Soccer Formations</h2>
+  const fromAddress = process.env.EMAIL_FROM;
 
-        <p>Please verify your email address by clicking below:</p>
+  console.log('Attempting to send verification email...');
+  console.log('To:', user.email);
+  console.log('From:', fromAddress);
+  console.log('Verification URL:', verificationUrl);
 
-        <p>
-          ${verificationUrl}
-            Verify Email Address
-          </a>
-        </p>
+  const { data, error } = await resend.emails.send({
+    from: fromAddress,
+    to: user.email,
+    subject: 'Verify Your Soccer Formations Account',
+    html: `
+      <h2>Welcome to Soccer Formations</h2>
 
-        <p>
-          If the button does not work, copy and paste this link:
-        </p>
+      <p>Please verify your email address by clicking the link below:</p>
 
-        <p>${verificationUrl}</p>
-      `,
-    });
+      <p>
+        ${verificationUrl}
+          Verify Email Address
+        </a>
+      </p>
 
-    console.log(`Verification email sent to ${user.email}`);
-  } catch (error) {
-    console.error('Failed to send verification email:', error);
+      <p>If the link does not work, copy and paste this URL into your browser:</p>
+
+      <p>${verificationUrl}</p>
+    `,
+  });
+
+  if (error) {
+    console.error('Resend failed to send verification email:', error);
+    throw new Error(error.message || 'Failed to send verification email.');
   }
+
+  console.log('Verification email sent successfully.');
+  console.log('Resend response:', data);
+
+  return data;
 }
 
 app.post('/api/auth/signup', async (req, res) => {
