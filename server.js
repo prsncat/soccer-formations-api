@@ -9,17 +9,13 @@ const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { Resend } = require('resend');
 const app = express();
-const { Resend } = require('resend');
-
 const PORT = process.env.PORT || 4000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-
 const ACCESS_COOKIE = 'sf_access';
 const REFRESH_COOKIE = 'sf_refresh';
-
 const ACCESS_TOKEN_TTL = '15m';
 const REFRESH_TOKEN_TTL = '7d';
-
+const resend = new Resend(process.env.RESEND_API_KEY);
 const PASSWORD_REGEX =
   /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%&*?])[A-Za-z\d!@#$%&*?]{8,15}$/;
 
