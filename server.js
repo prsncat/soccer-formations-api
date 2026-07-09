@@ -320,11 +320,38 @@ app.post('/api/auth/refresh', (req, res) => {
   }
 });
 
-app.post('/api/auth/logout', requireAuth, (req, res) => {
-  req.user.tokenVersion += 1;
-  clearAuthCookies(res);
+app.post('/api/auth/logout', (req, res) => {
+  try {
+    const refreshToken = req.cookies[REFRESH_COOKIE];
 
-  return res.json({ message: 'Logged out successfully.' });
+    if (refreshToken) {
+      try {
+        const payload = jwt.verify(
+          refreshToken,
+          process.env.JWT_REFRESH_SECRET
+        );
+
+        const user = findUserById(payload.sub);
+
+        if (user && user.tokenVersion === payload.tokenVersion) {
+          user.tokenVersion += 1;
+        }
+      } catch {
+        // Ignore invalid or expired refresh token during logout.
+        // Logout should still clear browser cookies.
+      }
+    }
+
+    clearAuthCookies(res);
+
+    return res.status(204).send();
+  } catch (error) {
+    console.error('Logout error:', error);
+
+    clearAuthCookies(res);
+
+    return res.status(204).send();
+  }
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => {
