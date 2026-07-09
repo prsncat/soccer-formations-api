@@ -265,6 +265,51 @@ console.log('POSTGRES USER CREATED:', user.id);
   });
 });
 
+app.post('/api/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const normalizedEmail = String(email || '')
+      .trim()
+      .toLowerCase();
+
+    if (!normalizedEmail) {
+      return res.status(400).json({
+        message: 'Email is required.',
+      });
+    }
+
+    const user = await findUserByEmail(normalizedEmail);
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'Account not found.',
+      });
+    }
+
+    if (user.emailVerified) {
+      return res.status(400).json({
+        message: 'Email address is already verified.',
+      });
+    }
+
+    const emailToken = createEmailVerificationToken(user);
+
+    await sendVerificationEmail(user, emailToken);
+
+    return res.json({
+      message: 'Verification email sent.',
+    });
+  } catch (error) {
+    console.error('Resend verification error:', error);
+
+    return res.status(500).json({
+      message:
+        error.message || 'Unable to resend verification email.',
+    });
+  }
+});
+
 app.get('/api/auth/verify-email', async (req, res) => {
   const { token } = req.query;
 
