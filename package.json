@@ -4,9 +4,9 @@
   "description": "Backend API for Soccer Formations authentication",
   "main": "server.js",
   "scripts": {
-    "start": "prisma migrate deploy && node server.js",
-    "dev": "node server.js"
-  },
+  "start": "prisma generate && prisma migrate deploy && node server.js",
+  "dev": "node server.js"
+},
   "keywords": [],
   "author": "",
   "license": "ISC",
