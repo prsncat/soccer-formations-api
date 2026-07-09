@@ -7,8 +7,9 @@ const cookieParser = require('cookie-parser');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-
+const { Resend } = require('resend');
 const app = express();
+const { Resend } = require('resend');
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -142,16 +143,39 @@ function createEmailVerificationToken(user) {
   );
 }
 
-function sendVerificationEmail(user, token) {
-  const verificationUrl = `${CLIENT_ORIGIN}/verify-email?token=${encodeURIComponent(
-    token
-  )}`;
+async function sendVerificationEmail(user, token) {
+  const verificationUrl =
+    `${CLIENT_ORIGIN}/verify-email?token=` +
+    encodeURIComponent(token);
 
-  // Replace this console output with SendGrid, Resend, Mailgun, Postmark, etc.
-  console.log('');
-  console.log('EMAIL VERIFICATION LINK');
-  console.log(verificationUrl);
-  console.log('');
+  try {
+    await resend.emails.send({
+      from: process.env.EMAIL_FROM,
+      to: user.email,
+      subject: 'Verify Your Soccer Formations Account',
+      html: `
+        <h2>Welcome to Soccer Formations</h2>
+
+        <p>Please verify your email address by clicking below:</p>
+
+        <p>
+          ${verificationUrl}
+            Verify Email Address
+          </a>
+        </p>
+
+        <p>
+          If the button does not work, copy and paste this link:
+        </p>
+
+        <p>${verificationUrl}</p>
+      `,
+    });
+
+    console.log(`Verification email sent to ${user.email}`);
+  } catch (error) {
+    console.error('Failed to send verification email:', error);
+  }
 }
 
 app.post('/api/auth/signup', async (req, res) => {
@@ -187,8 +211,8 @@ app.post('/api/auth/signup', async (req, res) => {
 
   users.set(normalizedEmail, user);
 
-  const emailToken = createEmailVerificationToken(user);
-  sendVerificationEmail(user, emailToken);
+const emailToken = createEmailVerificationToken(user);
+await sendVerificationEmail(user, emailToken);
 
   return res.status(201).json({
     message: 'Account created. Please verify your email before logging in.',
