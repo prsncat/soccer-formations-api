@@ -8,8 +8,19 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { Resend } = require('resend');
+const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
+
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL,
+});
+
+const prisma = new PrismaClient({
+  adapter,
+});
 
 const app = express();
+
 
 // Required when running behind Railway/Vercel/proxy infrastructure.
 // This allows express-rate-limit to correctly understand forwarded IPs.
@@ -26,8 +37,6 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const PASSWORD_REGEX =
   /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%&*?])[A-Za-z\d!@#$%&*?]{8,15}$/;
 
-// Replace this with a real database.
-const users = new Map();
 
 app.use(
   cors({
@@ -50,10 +59,12 @@ app.use(
 );
 
 function cookieOptions(maxAgeMs) {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
     path: '/',
     maxAge: maxAgeMs,
   };
@@ -93,24 +104,40 @@ function setAuthCookies(res, user) {
   res.cookie(REFRESH_COOKIE, refreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000));
 }
 
+
+function clearCookieOptions() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
+    path: '/',
+  };
+}
+
 function clearAuthCookies(res) {
-  res.clearCookie(ACCESS_COOKIE, { path: '/' });
-  res.clearCookie(REFRESH_COOKIE, { path: '/' });
+  res.clearCookie(ACCESS_COOKIE, clearCookieOptions());
+  res.clearCookie(REFRESH_COOKIE, clearCookieOptions());
 }
 
-function findUserByEmail(email) {
-  return users.get(email.toLowerCase());
+async function findUserByEmail(email) {
+  return prisma.user.findUnique({
+    where: {
+      email: email.toLowerCase(),
+    },
+  });
 }
 
-function findUserById(id) {
-  for (const user of users.values()) {
-    if (user.id === id) return user;
-  }
-
-  return null;
+async function findUserById(id) {
+  return prisma.user.findUnique({
+    where: {
+      id,
+    },
+  });
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const token = req.cookies[ACCESS_COOKIE];
 
   if (!token) {
@@ -119,7 +146,8 @@ function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-    const user = findUserById(payload.sub);
+
+    const user = await findUserById(payload.sub);
 
     if (!user) {
       return res.status(401).json({ message: 'User not found.' });
@@ -128,7 +156,9 @@ function requireAuth(req, res, next) {
     req.user = user;
     next();
   } catch {
-    return res.status(401).json({ message: 'Invalid or expired access token.' });
+    return res.status(401).json({
+      message: 'Invalid or expired access token.',
+    });
   }
 }
 
@@ -205,32 +235,37 @@ app.post('/api/auth/signup', async (req, res) => {
     });
   }
 
-  if (findUserByEmail(normalizedEmail)) {
+  const existingUser = await findUserByEmail(normalizedEmail);
+
+  if (existingUser) {
     return res.status(409).json({ message: 'Account already exists.' });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
 
-  const user = {
-    id: crypto.randomUUID(),
-    email: normalizedEmail,
-    passwordHash,
-    emailVerified: false,
-    tokenVersion: 0,
-    createdAt: new Date().toISOString(),
-  };
+console.log('WRITING USER TO POSTGRES:', normalizedEmail);
 
-  users.set(normalizedEmail, user);
+  const user = await prisma.user.create({
+    data: {
+      email: normalizedEmail,
+      passwordHash,
+      emailVerified: false,
+      tokenVersion: 0,
+    },
+  });
 
-const emailToken = createEmailVerificationToken(user);
-await sendVerificationEmail(user, emailToken);
+console.log('POSTGRES USER CREATED:', user.id);
+
+  const emailToken = createEmailVerificationToken(user);
+
+  await sendVerificationEmail(user, emailToken);
 
   return res.status(201).json({
     message: 'Account created. Please verify your email before logging in.',
   });
 });
 
-app.get('/api/auth/verify-email', (req, res) => {
+app.get('/api/auth/verify-email', async (req, res) => {
   const { token } = req.query;
 
   if (!token) {
@@ -244,17 +279,26 @@ app.get('/api/auth/verify-email', (req, res) => {
       return res.status(400).json({ message: 'Invalid verification token.' });
     }
 
-    const user = findUserById(payload.sub);
+    const user = await findUserById(payload.sub);
 
     if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    user.emailVerified = true;
+    await prisma.user.update({
+      where: {
+        id: user.id,
+      },
+      data: {
+        emailVerified: true,
+      },
+    });
 
     return res.json({ message: 'Email verified successfully.' });
   } catch {
-    return res.status(400).json({ message: 'Invalid or expired verification token.' });
+    return res.status(400).json({
+      message: 'Invalid or expired verification token.',
+    });
   }
 });
 
@@ -262,13 +306,17 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
 
   const normalizedEmail = String(email || '').trim().toLowerCase();
-  const user = findUserByEmail(normalizedEmail);
+
+  const user = await findUserByEmail(normalizedEmail);
 
   if (!user) {
     return res.status(401).json({ message: 'Invalid email or password.' });
   }
 
-  const passwordMatches = await bcrypt.compare(password || '', user.passwordHash);
+  const passwordMatches = await bcrypt.compare(
+    password || '',
+    user.passwordHash
+  );
 
   if (!passwordMatches) {
     return res.status(401).json({ message: 'Invalid email or password.' });
@@ -290,7 +338,7 @@ app.post('/api/auth/login', async (req, res) => {
   });
 });
 
-app.post('/api/auth/refresh', (req, res) => {
+app.post('/api/auth/refresh', async (req, res) => {
   const token = req.cookies[REFRESH_COOKIE];
 
   if (!token) {
@@ -299,10 +347,12 @@ app.post('/api/auth/refresh', (req, res) => {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-    const user = findUserById(payload.sub);
+
+    const user = await findUserById(payload.sub);
 
     if (!user || user.tokenVersion !== payload.tokenVersion) {
       clearAuthCookies(res);
+
       return res.status(401).json({ message: 'Invalid refresh token.' });
     }
 
@@ -316,11 +366,15 @@ app.post('/api/auth/refresh', (req, res) => {
     });
   } catch {
     clearAuthCookies(res);
-    return res.status(401).json({ message: 'Invalid or expired refresh token.' });
+
+    return res.status(401).json({
+      message: 'Invalid or expired refresh token.',
+    });
   }
 });
 
-app.post('/api/auth/logout', (req, res) => {
+
+app.post('/api/auth/logout', async (req, res) => {
   try {
     const refreshToken = req.cookies[REFRESH_COOKIE];
 
@@ -331,14 +385,23 @@ app.post('/api/auth/logout', (req, res) => {
           process.env.JWT_REFRESH_SECRET
         );
 
-        const user = findUserById(payload.sub);
+        const user = await findUserById(payload.sub);
 
         if (user && user.tokenVersion === payload.tokenVersion) {
-          user.tokenVersion += 1;
+          await prisma.user.update({
+            where: {
+              id: user.id,
+            },
+            data: {
+              tokenVersion: {
+                increment: 1,
+              },
+            },
+          });
         }
       } catch {
         // Ignore invalid or expired refresh token during logout.
-        // Logout should still clear browser cookies.
+        // Logout should still clear cookies.
       }
     }
 
